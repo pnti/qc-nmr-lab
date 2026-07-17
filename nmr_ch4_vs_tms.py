@@ -41,8 +41,10 @@ def run_nmr(mol_xyz, name, charge=0, spin=0):
 
     print(f"\n[{name}] SCF startowe...")
     mf = dft.RKS(mol)
+    mf.max_memory = 12000 # zmiana
     mf.xc = XC
-    mf.grids.level = GRID_LEVEL
+    #mf.grids.level = GRID_LEVEL
+    mf.grids.level = 2
     mf.conv_tol = 1e-9
     mf.kernel()
     if not mf.converged:
@@ -54,6 +56,7 @@ def run_nmr(mol_xyz, name, charge=0, spin=0):
 
     print(f"\n[{name}] SCF na optymalnej geometrii...")
     mf_eq = dft.RKS(mol_eq)
+    mf_eq.max_memory = 12000 # zmiana
     mf_eq.xc = XC
     mf_eq.grids.level = GRID_LEVEL
     mf_eq.conv_tol = 1e-10
