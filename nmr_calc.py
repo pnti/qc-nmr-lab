@@ -56,6 +56,7 @@ def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
     mf.xc = XC
     mf.grids.level = 2
     mf.conv_tol = 1e-9
+    mf.canonical_orthog_thresh = 0 # dodane
     mf.kernel()
     if not mf.converged:
         raise RuntimeError(f"SCF nie zbiegło dla {name}")
@@ -75,7 +76,8 @@ def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
     mol_final.charge = charge
     mol_final.spin = spin
     mol_final.verbose = VERBOSE
-    mol_final.symmetry = target_symmetry
+    #mol_final.symmetry = target_symmetry
+    mol_final.symmetry = True if target_symmetry == "auto" else target_symmetry
     mol_final.max_memory = MEMORY
     mol_final.build()
 
