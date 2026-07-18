@@ -1,12 +1,12 @@
 ## Rolling Notes
 
-#### Lowering grid level
+#### Lower grid level
 
-    #mf.grids.level = GRID_LEVEL
+    # mf.grids.level = GRID_LEVEL
     mf.grids.level = 2
 
 
-#### Resolving memory issues
+#### Resolve memory issues
 
     print(f"\n[{name}] SCF startowe...")
     mf = dft.RKS(mol)
@@ -16,19 +16,19 @@
     mf_eq = dft.RKS(mol_eq)
     mf_eq.max_memory = 12000 # zmiana
 
-#### Saving screen output to file 
+#### Save screen output to file 
 
 `$ python3 nmr_ch4_vs_tms.py 2>&1 | tee obliczenia_output.log`
 
 
-#### Problem with cache
+#### Clear temporary cache
 
-It's possible that it's necessary to clean tmp directory between kolejnymi uruchomieniami programi.
+It may be necessary to clean the /tmp directory between consecutive program runs.
 
 `$ rm -f /tmp/tmp*`
 
 
-#### Update of TMS coordinates
+#### Update TMS coordinates
 
 ```tms_xyz = '''
 Si       0.00000000    0.00000000    0.00000000
