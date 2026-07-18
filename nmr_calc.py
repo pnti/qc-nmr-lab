@@ -7,6 +7,10 @@ import numpy as np
 with open('config.json', 'r') as f:
     config = json.load(f)
 
+# Pobranie zamrożonej bazy odniesienia TMS i innych gotowych cząsteczek
+zablokowane_bazy = config.get('zablokowane_bazy_odniesienia', {})
+sigma_tms = zablokowane_bazy.get('TMS', None)
+
 settings = config['settings']
 
 # 2. Ustawienia środowiskowe i inicjalizacja pamięci u źródła
@@ -31,15 +35,19 @@ VERBOSE = settings['verbose']
 GRID_LEVEL = settings['grid_level']
 MEMORY = settings['memory_mb']
 
-def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
+def run_nmr(mol_xyz, name, target_symmetry, freeze_atoms=None, charge=0, spin=0):
     t0 = time.time()
     print(f"\n{'='*50}")
     print(f"START: {name}")
     print(f"{'='*50}")
 
-    # Krok 1: Optymalizacja geometrii (bez jawnej symetrii, aby solver geomeTRIC przeszedł bez błędów)
+    # Krok 1: Inicjalizacja molekuły
     mol = gto.Mole()
-    mol.atom = mol_xyz
+    # Jeśli xyz podano jako listę w JSON, łączymy ją znakami nowej linii
+    if isinstance(mol_xyz, list):
+        mol.atom = "\n".join(mol_xyz)
+    else:
+        mol.atom = mol_xyz
     mol.basis = BASIS
     mol.unit = 'Angstrom'
     mol.charge = charge
@@ -56,13 +64,30 @@ def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
     mf.xc = XC
     mf.grids.level = 2
     mf.conv_tol = 1e-9
-    mf.canonical_orthog_thresh = 0 # dodane
+    mf.canonical_orthog_thresh = 0 
     mf.kernel()
     if not mf.converged:
         raise RuntimeError(f"SCF nie zbiegło dla {name}")
 
     print(f"\n[{name}] Optymalizacja geometrii...")
-    mol_eq = geometric_solver.optimize(mf, maxsteps=100, convergence='tight')
+    
+    # Obsługa blokowania wybranych atomów (np. szkieletu węglowego)
+    if freeze_atoms:
+        print(f"Wykryto atomy do zamrożenia: {freeze_atoms}. Uruchamiam relaksację wodorów...")
+        constraints_file = "constraints.txt"
+        with open(constraints_file, "w") as cf:
+            cf.write("$freeze\n")
+            for idx in freeze_atoms:
+                cf.write(f"xyz {idx + 1}\n") # geomeTRIC liczy od 1, PySCF od 0
+        
+        mol_eq = geometric_solver.optimize(mf, maxsteps=100, convergence='tight', constraints=constraints_file)
+        # Sprzątanie pliku tymczasowego
+        if os.path.exists(constraints_file):
+            os.remove(constraints_file)
+    else:
+        print("Brak zablokowanych atomów. Wykonuję pełną optymalizację.")
+        mol_eq = geometric_solver.optimize(mf, maxsteps=100, convergence='tight')
+
     mol_eq.tofile(f'{name}_opt.xyz')
 
     print(f"\n[{name}] SCF na optymalnej geometrii...")
@@ -76,7 +101,6 @@ def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
     mol_final.charge = charge
     mol_final.spin = spin
     mol_final.verbose = VERBOSE
-    #mol_final.symmetry = target_symmetry
     mol_final.symmetry = True if target_symmetry == "auto" else target_symmetry
     mol_final.max_memory = MEMORY
     mol_final.build()
@@ -97,7 +121,7 @@ def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
 
     shielding_tensors = nmr_obj.shielding()
 
-    # Filtrowanie indeksów atomów węgla przy użyciu bezpiecznej właściwości .elements
+    # Wyciąganie wyników
     c_indices = [i for i, a in enumerate(mol_final.elements) if a == 'C']
     sigma_c = []
     for idx in c_indices:
@@ -114,30 +138,42 @@ def run_nmr(mol_xyz, name, target_symmetry, charge=0, spin=0):
 print(f"Metoda: {XC}/{BASIS}")
 print("Uruchamiam sekwencję obliczeniową z pliku konfiguracyjnego...")
 
-results = {}
-for name, data in config['molecules'].items():
-    sigma_c = run_nmr(data['xyz'], name, data['symmetry'])
-    results[name] = {
+# Słownik na bieżące wyniki
+nowe_wyniki = {}
+# Parsujemy sekcję "czasteczki_do_obliczen" zamiast dawnej "molecules"
+for name, data in config.get('czasteczki_do_obliczen', {}).items():
+    freeze = data.get('freeze_atoms', None)
+    symmetry = data.get('symmetry', 'auto') # domyślnie auto, jeśli brak w JSON
+    
+    sigma_c = run_nmr(data['xyz'], name, symmetry, freeze_atoms=freeze)
+    
+    nowe_wyniki[name] = {
         'sigma_c_all': sigma_c,
         'sigma_c_avg': np.mean(sigma_c),
         'sigma_c_std': np.std(sigma_c)
     }
 
-# Generowanie raportu końcowego
+# Generowanie raportu końcowego łączącego stare i nowe dane
 print(f"\n{'='*50}")
 print("PODSUMOWANIE PRZESUNIĘĆ CHEMICZNYCH (13C)")
 print(f"{'='*50}")
-
-sigma_tms = results['TMS']['sigma_c_avg']
-print(f"Baza odniesienia (TMS): σ_iso = {sigma_tms:.3f} ppm (Rozrzut: {results['TMS']['sigma_c_std']:.3f} ppm)\n")
+print(f"Baza odniesienia (TMS): σ_iso = {sigma_tms:.3f} ppm\n")
 
 with open('wynik_NMR.txt', 'w') as f:
     f.write(f"Metoda: {XC}/{BASIS}\n")
     f.write(f"Wzorzec TMS: sigma = {sigma_tms:.3f} ppm\n\n")
     
-    for name, res in results.items():
+    # Najpierw wypisujemy zablokowane z pliku konfiguracyjnego
+    for name, sigma_avg in zablokowane_bazy.items():
         if name == 'TMS':
             continue
+        delta = sigma_tms - sigma_avg
+        output_line = f" Czarsteczka: {name:<8} | σ_iso = {sigma_avg:.3f} ppm | δ 13C = {delta:.2f} ppm (Wczytano z bazy)"
+        print(output_line)
+        f.write(output_line + "\n")
+        
+    # Następnie dopisujemy świeżo obliczone struktury (np. Toluen)
+    for name, res in nowe_wyniki.items():
         delta = sigma_tms - res['sigma_c_avg']
         output_line = f" Czarsteczka: {name:<8} | σ_iso = {res['sigma_c_avg']:.3f} ppm | δ 13C = {delta:.2f} ppm"
         print(output_line)
