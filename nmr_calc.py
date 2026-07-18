@@ -41,9 +41,8 @@ def run_nmr(mol_xyz, name, target_symmetry, freeze_atoms=None, charge=0, spin=0)
     print(f"START: {name}")
     print(f"{'='*50}")
 
-    # Krok 1: Inicjalizacja molekuły
+    # 1. Inicjalizacja molekuły (zawsze bez symetrii na starcie dla geomeTRIC)
     mol = gto.Mole()
-    # Jeśli xyz podano jako listę w JSON, łączymy ją znakami nowej linii
     if isinstance(mol_xyz, list):
         mol.atom = "\n".join(mol_xyz)
     else:
@@ -70,59 +69,51 @@ def run_nmr(mol_xyz, name, target_symmetry, freeze_atoms=None, charge=0, spin=0)
         raise RuntimeError(f"SCF nie zbiegło dla {name}")
 
     print(f"\n[{name}] Optymalizacja geometrii...")
-    
-    # Obsługa blokowania wybranych atomów (np. szkieletu węglowego)
     if freeze_atoms:
         print(f"Wykryto atomy do zamrożenia: {freeze_atoms}. Uruchamiam relaksację wodorów...")
         constraints_file = "constraints.txt"
         with open(constraints_file, "w") as cf:
             cf.write("$freeze\n")
             for idx in freeze_atoms:
-                cf.write(f"xyz {idx + 1}\n") # geomeTRIC liczy od 1, PySCF od 0
+                cf.write(f"xyz {idx + 1}\n")
         
-        mol_eq = geometric_solver.optimize(mf, maxsteps=100, convergence='tight', constraints=constraints_file)
-        # Sprzątanie pliku tymczasowego
+        # geomeTRIC modyfikuje obiekt mol bezpośrednio w miejscu (in-place)
+        geometric_solver.optimize(mf, maxsteps=100, convergence='tight', constraints=constraints_file)
         if os.path.exists(constraints_file):
             os.remove(constraints_file)
     else:
         print("Brak zablokowanych atomów. Wykonuję pełną optymalizację.")
-        mol_eq = geometric_solver.optimize(mf, maxsteps=100, convergence='tight')
+        geometric_solver.optimize(mf, maxsteps=100, convergence='tight')
 
-    mol_eq.tofile(f'{name}_opt.xyz')
+    mol.tofile(f'{name}_opt.xyz')
 
-    print(f"\n[{name}] SCF na optymalnej geometrii...")
-    coords_eq = mol_eq.atom_coords()
+    # 2. Drugie SCF wykonujemy bezpośrednio na tym samym obiekcie 'mol', który ma już zaktualizowane współrzędne 3D
+    print(f"\n[{name}] SCF na zoptymalizowanej geometrii (docelowy grid)...")
     
-    # Krok 2: Rekonstrukcja molekuły i wymuszenie symetrii dla dokładnego NMR
-    mol_final = gto.Mole()
-    mol_final.atom = [[mol_eq.atom_symbol(i), coords_eq[i]] for i in range(mol_eq.natm)]
-    mol_final.basis = BASIS
-    mol_final.unit = 'Bohr'
-    mol_final.charge = charge
-    mol_final.spin = spin
-    mol_final.verbose = VERBOSE
-    mol_final.symmetry = True if target_symmetry == "auto" else target_symmetry
-    mol_final.max_memory = MEMORY
-    mol_final.build()
+    # Jeśli użytkownik jawnie wymusił grupę inną niż C1/auto/false, przypisujemy ją tutaj
+    if target_symmetry and str(target_symmetry).lower() not in ["auto", "false", "c1"]:
+        mol.symmetry = target_symmetry
+        mol.build(0, 0) # Przebudowanie tabel symetrii bez resetowania współrzędnych
+    else:
+        mol.symmetry = False
 
-    mf_eq = dft.RKS(mol_final)
+    mf_eq = dft.RKS(mol)
     mf_eq.max_memory = MEMORY
     mf_eq.xc = XC
     mf_eq.grids.level = GRID_LEVEL
     mf_eq.conv_tol = 1e-10
     mf_eq.kernel()
     if not mf_eq.converged:
-        raise RuntimeError(f"SCF po opt nie zbiegło dla {name}")
+        raise RuntimeError(f"SCF po optymalizacji nie zbiegło dla {name}")
 
-    # Krok 3: Obliczenia GIAO-NMR
+    # 3. Obliczenia GIAO-NMR
     print(f"\n[{name}] Liczenie GIAO-NMR...")
     nmr_obj = nmr.rks.NMR(mf_eq)
-    nmr_obj.kernel()
-
-    shielding_tensors = nmr_obj.shielding()
 
     # Wyciąganie wyników
-    c_indices = [i for i, a in enumerate(mol_final.elements) if a == 'C']
+    shielding_tensors = nmr_obj.kernel()
+
+    c_indices = [i for i, a in enumerate(mol.elements) if a == 'C']
     sigma_c = []
     for idx in c_indices:
         tensor = shielding_tensors[idx]
